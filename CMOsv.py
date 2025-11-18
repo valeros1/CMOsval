@@ -1,201 +1,118 @@
-import os
-import socket
 import argparse
-import tomllib
+import sys
 
-def parse_arguments():
-    """Парсим аргументы командной строки"""
+
+def command_line():
+    """
+    Минимальное CLI-приложение для визуализации графа зависимостей
+    Вариант №17, Этап 1
+    """
     parser = argparse.ArgumentParser(
-        description='Эмулятор командной оболочки ОС',
-        epilog='Пример: python CMOsv.py --vfs ./my_vfs --script startup.txt --config config.toml'
+        description='Инструмент визуализации графа зависимостей для менеджера пакетов'
     )
 
-    parser.add_argument('--vfs', help='Путь к физическому расположению VFS')
+    # Имя анализируемого пакета (обязательный)
+    parser.add_argument(
+        "-p", "--package-name",
+        type=str,
+        required=True,
+        help="Имя анализируемого пакета"
+    )
 
-    parser.add_argument('--script', help='Путь к стартовому скрипту')
+    # URL-адрес репозитория или путь к файлу тестового репозитория (обязательный)
+    parser.add_argument(
+        "-r", "--repo-url",
+        type=str,
+        required=True,
+        help="URL-адрес репозитория или путь к файлу тестового репозитория"
+    )
 
-    parser.add_argument('--config', help = 'Путь к конфигурационному файлу TOML')
+    # Режим работы с тестовым репозиторием
+    parser.add_argument(
+        "-m", "--repo-mode",
+        action="store_true",
+        help="Режим работы с тестовым репозиторием"
+    )
 
-    return parser.parse_args()
+    # Версия пакета
+    parser.add_argument(
+        "-v", "--version",
+        type=str,
+        default="latest",
+        help="Версия пакета"
+    )
 
+    # Имя сгенерированного файла с изображением графа
+    parser.add_argument(
+        "-o", "--output-image",
+        type=str,
+        default="dependency_graph.png",
+        help="Имя сгенерированного файла с изображением графа"
+    )
 
-def load_config(config_path):
-    """Загружаем конфигурацию из TOML файла"""
-    if not config_path:
-        print("Путь к конфигу не указан")
-        return {}
+    # Режим вывода зависимостей в формате ASCII-дерева
+    parser.add_argument(
+        "-a", "--ascii-tree",
+        action="store_true",
+        help="Режим вывода зависимостей в формате ASCII-дерева"
+    )
 
-    if not os.path.exists(config_path):
-        print(f"Конфиг-файл не найден: {config_path}")
-        return {}
+    # Максимальная глубина анализа зависимостей
+    parser.add_argument(
+        "-d", "--max-depth",
+        type=int,
+        default=10,
+        help="Максимальная глубина анализа зависимостей"
+    )
 
-    try:
-        with open(config_path, 'rb') as f:
-            # Читаем и парсим TOML файл
-            config = tomllib.load(f)
-        print(f"Конфиг загружен: {config_path}")
-        return config
-    except Exception as e:
-        print(f"Ошибка чтения конфига {config_path}: {e}")
-        return {}
+    # Подстрока для фильтрации пакетов
+    parser.add_argument(
+        "-f", "--filter",
+        type=str,
+        default="",
+        help="Подстрока для фильтрации пакетов"
+    )
 
+    # Парсинг аргументов
+    args = parser.parse_args()
 
-def merge_configurations(args_config, file_config):
-    """Логика приоритетов"""
-    final_config = {}
+    errors = validate_arguments(args)
+    if errors:
+        print("Обнаружены ошибки в параметрах:")
+        for error in errors:
+            print(f"  - {error}")
+        sys.exit(1)
 
-    # Берем VFS путь (с приоритетом файла)
-    if file_config.get('vfs_path'):
-        final_config['vfs'] = file_config['vfs_path']
-        print("VFS: использован путь из конфиг-файла")
-    elif args_config.vfs:
-        final_config['vfs'] = args_config.vfs
-        print("VFS: использован путь из аргументов")
-    else:
-        final_config['vfs'] = None
-        print("VFS: путь не указан")
+    args_dict = vars(args)
 
-    # Берем путь скрипта (с приоритетом файла)
-    if file_config.get('script_path'):
-        final_config['script'] = file_config['script_path']
-        print("Скрипт: использован путь из конфиг-файла")
-    elif args_config.script:
-        final_config['script'] = args_config.script
-        print("Скрипт: использован путь из аргументов")
-    else:
-        final_config['script'] = None
-        print("Скрипт: путь не указан")
+    print(50 * "=")
+    for key, value in args_dict.items():
+        print(f"{key}: {value}")
 
-    return final_config
+def validate_arguments(args):
 
+    errors = []
 
-def script(script_path):
-    """Выполнение стартового скрипта"""
-    if not script_path:
-        print("Путь к скрипту не указан")
-        return True
+        # Проверка обязательных параметров
+    if not args.package_name or not args.package_name.strip():
+        errors.append("имя пакета не может быть пустым")
 
-    if not os.path.exists(script_path):
-        print(f"Скрипт не найден: {script_path}")
-        return False
+    if not args.repo_url or not args.repo_url.strip():
+        errors.append("источник не может быть пустым")
 
-    try:
-        print(f"Выполняем скрипт: {script_path}")
-        with open(script_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        # Проверка максимальной глубины
+    if args.max_depth <= 0:
+        errors.append("максимальная глубина должна быть положительным числом")
 
-        for line_num, line in enumerate(lines, 1):
-            line = line.strip()
+        # Проверка версии (если указана)
+    if args.version and args.version != "latest":
+        if not args.version[0].isdigit():
+            errors.append("версия должна начинаться с цифры")
 
-            # Пропускаем пустые строки
-            if not line:
-                continue
+        # Простая проверка выходного файла
+    if args.output_image and not args.output_image.endswith(('.png', '.jpg', '.jpeg', '.svg')):
+        errors.append("выходной файл должен быть изображением (.png, .jpg, .jpeg, .svg)")
 
-            print(line)
+    return errors
 
-            parts = line.split()
-            cmd = parts[0]
-            args = parts[1:]
-
-            if cmd not in ['ls', 'cd', 'exit']:
-                print(f"Ошибка в строке {line_num}: команда '{cmd}' не найдена")
-                return False  # Останавливаемся при первой ошибке
-
-            else:
-                print(cmd, args)
-
-
-
-        print("Скрипт выполнен успешно")
-        return True
-
-    except Exception as e:
-        print(f"Ошибка выполнения скрипта {script_path}: {e}")
-        return False
-
-
-def get_username():
-    """Функция для получения имени текущего пользователя."""
-    return os.getlogin()
-
-def get_hostname():
-    """Функция для получения имени компьютера (хоста)."""
-    return socket.gethostname()
-
-def main():
-
-    args = parse_arguments()
-
-    file_config = {}
-    if args.config:
-        file_config = load_config(args.config)
-
-    final_config = merge_configurations(args, file_config)
-
-
-
-    if final_config['script']:
-        script_success = script(final_config['script'])
-        if not script_success:
-            print("Ошибка в скрипте")
-            return
-        print("------------------------------------------")
-
-    print("------------------------------------------")
-    print("Из командной строки:")
-    print(f"  VFS: {args.vfs}")
-    print(f"  Скрипт: {args.script}")
-    print(f"  Конфиг: {args.config}")
-    print('-' * 25)
-    print("Из конфиг-файла:")
-    print(f"  VFS: {file_config.get('vfs_path', 'Не указан')}")
-    print(f"  Скрипт: {file_config.get('script_path', 'Не указан')}")
-    print('-' * 25)
-    print("Итоговый результат:")
-    print(f"  VFS: {final_config['vfs']}")
-    print(f"  Скрипт: {final_config['script']}")
-    print("------------------------------------------")
-    print("Для выхода введите команду 'exit'.")
-    print("Доступные команды: ls, cd, exit")
-
-    while True:
-        username = get_username()
-        hostname = get_hostname()
-        prompt = f"{username}@{hostname}:~$ "
-        user_input = input(prompt).strip()
-        parts = user_input.split()
-
-        if not parts:
-            continue
-
-        cmd = parts[0]
-        args = parts[1:]
-
-        match cmd:
-            case "ls":
-                print(cmd, args)
-
-            case "cd":
-                print(cmd, args)
-
-            case "exit":
-                print("Выход из эмулятора. До свидания!")
-                break
-
-            case _:
-                print(f"Команда '{cmd}' не найдена. Доступные команды: ls, cd, exit")
-
-if __name__ == "__main__":
-    main()
-
-
-
-
-
-
-
-
-
-
-
-
+command_line()

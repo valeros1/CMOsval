@@ -1,2 +1,9 @@
-echo "3. Тест --vfs и --script:"
-python CMOsv.py --vfs ./test_vfs --script script.txt
+python CMOsv.py -p "" -r "repo"
+echo "---------------------------------------------------------------------------"
+python CMOsv.py -p "test" -r ""
+echo "---------------------------------------------------------------------------"
+python CMOsv.py -p "test" -r "repo" -d -1
+echo "---------------------------------------------------------------------------"
+python CMOsv.py -p "test" -r "repo" -d 0
+echo "---------------------------------------------------------------------------"
+python CMOsv.py -p "" -r "" -d -5 -o "file.txt"
