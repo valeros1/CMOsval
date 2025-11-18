@@ -1,12 +1,5 @@
-echo "1. Все параметры вместе:"
-python CMOsv.py --vfs ./test_vfs --script script.txt --config config.toml
-
-echo ""
-
-echo "2. Комбинация VFS + конфиг:"
-python CMOsv.py --vfs ./test_vfs --config config.toml
-
-echo ""
-
-echo "3. Комбинация скрипт + конфиг:"
-python CMOsv.py --script script.txt --config config.toml
+python CMOsv.py -p "junit:junit" -v "4.13.2" -r "https://repo1.maven.org/maven2"
+echo "--------------------------------------------------------------------------"
+python CMOsv.py -p "org.apache.commons:commons-lang3" -v "3.12.0" -r "https://repo1.maven.org/maven2"
+echo "--------------------------------------------------------------------------"
+python CMOsv.py -p "org.springframework:spring-core" -v "5.3.23" -r "https://repo1.maven.org/maven2"

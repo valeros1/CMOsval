@@ -1,5 +1,47 @@
 import argparse
 import sys
+import urllib.request
+import xml.etree.ElementTree as ET
+
+
+def get_maven_dependencies(package_name, version, repo_url):
+
+    try:
+        # Разделяем group:artifact
+        group_id, artifact_id = package_name.split(':')
+
+        # Формируем URL к POM-файлу
+        group_path = group_id.replace('.', '/')
+        repo_url = repo_url.rstrip('/')
+        pom_url = f"{repo_url}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
+
+        print(f"Загружаем: {pom_url}")
+
+        # Скачиваем POM
+        with urllib.request.urlopen(pom_url) as response:
+            pom_content = response.read()
+
+        # Парсим XML
+        root = ET.fromstring(pom_content)
+
+        # Ищем зависимости
+        dependencies = []
+        for dep in root.findall('.//{http://maven.apache.org/POM/4.0.0}dependency'):
+            group_elem = dep.find('{http://maven.apache.org/POM/4.0.0}groupId')
+            artifact_elem = dep.find('{http://maven.apache.org/POM/4.0.0}artifactId')
+            version_elem = dep.find('{http://maven.apache.org/POM/4.0.0}version')
+
+            if group_elem is not None and artifact_elem is not None:
+                dep_name = f"{group_elem.text}:{artifact_elem.text}"
+                if version_elem is not None:
+                    dep_name += f":{version_elem.text}"
+                dependencies.append(dep_name)
+
+        return dependencies
+
+    except Exception as e:
+        print(f"Ошибка при получении зависимостей: {e}")
+        return []
 
 
 def command_line():
@@ -88,6 +130,24 @@ def command_line():
     print(50 * "=")
     for key, value in args_dict.items():
         print(f"{key}: {value}")
+
+    print("ЭТАП 2: ПОЛУЧЕНИЕ ЗАВИСИМОСТЕЙ MAVEN")
+    print("=" * 50)
+
+    # Получаем зависимости
+    dependencies = get_maven_dependencies(
+        args.package_name,
+        args.version,
+        args.repo_url
+    )
+
+    # Выводим зависимости (Пункт 4)
+    if dependencies:
+        print(f"\nПрямые зависимости {args.package_name}:{args.version}:")
+        for i, dep in enumerate(dependencies, 1):
+            print(f"  {i}. {dep}")
+    else:
+        print(f"\nЗависимости не найдены для {args.package_name}")
 
 def validate_arguments(args):
 
