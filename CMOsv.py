@@ -4,6 +4,141 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 
+class DependencyNode:
+    """Узел графа зависимостей"""
+    def __init__(self, package_name, version):
+        self.package_name = package_name
+        self.version = version
+        self.dependencies = []  # прямые зависимости
+        self.level = 0  # уровень в графе
+
+    def __str__(self):
+        return f"{self.package_name}:{self.version}"
+
+    def __eq__(self, other):
+        return str(self) == str(other)
+
+    def __hash__(self):
+        return hash(str(self))
+
+
+def build_dependency_graph_dfs(start_package, start_version, repo_url, max_depth=10, filter_str="", test_mode=False, visited=None, current_level=0):
+    """
+    Построение графа зависимостей с помощью BFS с рекурсией
+    """
+    if visited is None:
+        visited = set()
+
+    # Создаём узел для текущего пакета
+    current_node = DependencyNode(start_package, start_version)
+    current_node.level = current_level
+
+    # Проверяем циклические зависимости
+    if str(current_node) in visited:
+        print(f"Обнаружена циклическая зависимость: {current_node}")
+        return current_node
+
+    # Проверяем максимальную глубину
+    if current_level >= max_depth:
+        print(f"Достигнута максимальная глубина {max_depth} для {current_node}")
+        return current_node
+
+    # Проверяем фильтр
+    if filter_str and filter_str in start_package:
+        print(f"Пропущен по фильтру '{filter_str}': {current_node}")
+        return current_node
+
+    # Добавляем в посещённые
+    visited.add(str(current_node))
+
+    print(f"Обрабатываем {current_node} (уровень {current_level})")
+
+    try:
+        # Получаем прямые зависимости
+        dependencies = get_dependencies(start_package, start_version, repo_url, test_mode)
+
+        # Для каждой зависимости рекурсивно строим граф
+        for dep in dependencies:
+            if ':' in dep:
+                parts = dep.split(':')
+
+                if test_mode:
+                    # Тестовый режим
+                    dep_package = parts[0]  # Только имя пакета без ":1.0"
+                    dep_version = parts[1] if len(parts) > 1 else "1.0"
+                else:
+                    # Maven режим: "group:artifact:version"
+                    dep_package = f"{parts[0]}:{parts[1]}"
+                    dep_version = parts[2] if len(parts) > 2 else "unknown"
+
+                # Рекурсивный вызов для зависимости
+                dep_node = build_dependency_graph_dfs(
+                    dep_package, dep_version, repo_url,
+                    max_depth, filter_str, test_mode, visited, current_level + 1
+                )
+                current_node.dependencies.append(dep_node)
+
+    except Exception as e:
+        print(f"Ошибка при обработке {current_node}: {e}")
+
+    return current_node
+
+
+def print_dependency_graph(node, indent=0):
+    """Красивый вывод графа зависимостей"""
+    prefix = "  " * indent + "├── " if indent > 0 else ""
+    print(f"{prefix}{node.package_name}:{node.version}")
+
+    for dep in node.dependencies:
+        print_dependency_graph(dep, indent + 1)
+
+
+def get_test_dependencies(package_name, repo_url):
+    """
+    Получить зависимости из тестового файла
+    Формат файла: A: B, C, D
+    """
+    try:
+        with open(repo_url, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Извлекаем только имя пакета (без версии)
+        search_name = package_name.split(':')[0] if ':' in package_name else package_name
+
+        for line in content.split('\n'):
+            line = line.strip()
+            if ':' in line:
+                current_package, deps_part = line.split(':', 1)
+                current_package = current_package.strip()
+
+                if current_package == search_name:
+                    dependencies = [dep.strip() for dep in deps_part.split(',') if dep.strip()]
+                    print(f"Найдены зависимости для {search_name}: {dependencies}")
+                    return dependencies
+
+        print(f"Пакет {search_name} не найден в файле")
+        return []
+
+    except Exception as e:
+        print(f"Ошибка чтения тестового файла: {e}")
+        return []
+
+def get_dependencies(package_name, version, repo_url, test_mode=False):
+    """
+    Универсальная функция получения зависимостей
+    Поддерживает как Maven, так и тестовый режим
+    """
+    if test_mode:
+        # Тестовый режим - используем файл
+        print(f"Тестовый режим: ищем зависимости для {package_name} в файле {repo_url}")
+        dependencies = get_test_dependencies(package_name, repo_url)
+        # Преобразуем в формат "пакет:версия"
+        return [f"{dep}:1.0" for dep in dependencies if dep]  # убираем пустые
+    else:
+        # Режим Maven - используем старую функцию
+        print(f"Maven режим: ищем зависимости для {package_name}:{version}")
+        return get_maven_dependencies(package_name, version, repo_url)
+
 def get_maven_dependencies(package_name, version, repo_url):
 
     try:
@@ -141,13 +276,38 @@ def command_line():
         args.repo_url
     )
 
-    # Выводим зависимости (Пункт 4)
+    # Выводим зависимости
     if dependencies:
         print(f"\nПрямые зависимости {args.package_name}:{args.version}:")
         for i, dep in enumerate(dependencies, 1):
             print(f"  {i}. {dep}")
     else:
         print(f"\nЗависимости не найдены для {args.package_name}")
+
+    print("\n" + "-" * 50)
+    print("ЭТАП 3: ПОСТРОЕНИЕ ПОЛНОГО ГРАФА ЗАВИСИМОСТЕЙ")
+    print("-" * 50)
+
+    print(f"Параметры анализа:")
+    print(f"  - Максимальная глубина: {args.max_depth}")
+    print(f"  - Фильтр пакетов: '{args.filter}'")
+    print(f"  - Режим тестирования: {args.repo_mode}")
+
+    # Строим полный граф
+    root_node = build_dependency_graph_dfs(
+        start_package=args.package_name,
+        start_version=args.version,
+        repo_url=args.repo_url,
+        max_depth=args.max_depth,
+        filter_str=args.filter,
+        test_mode=args.repo_mode
+
+    )
+
+    # Выводим граф
+    print(f"\nПолный граф зависимостей {args.package_name}:{args.version}:")
+    print_dependency_graph(root_node)
+
 
 def validate_arguments(args):
 
