@@ -2,10 +2,12 @@ import argparse
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections import deque
 
 
 class DependencyNode:
     """Узел графа зависимостей"""
+
     def __init__(self, package_name, version):
         self.package_name = package_name
         self.version = version
@@ -22,66 +24,78 @@ class DependencyNode:
         return hash(str(self))
 
 
-def build_dependency_graph_dfs(start_package, start_version, repo_url, max_depth=10, filter_str="", test_mode=False, visited=None, current_level=0):
-    """
-    Построение графа зависимостей с помощью BFS с рекурсией
-    """
-    if visited is None:
-        visited = set()
+def build_dependency_graph_bfs(start_package, start_version, repo_url, max_depth=10, filter_str="", test_mode=False):
 
-    # Создаём узел для текущего пакета
-    current_node = DependencyNode(start_package, start_version)
-    current_node.level = current_level
+    # Построение графа зависимостей с помощью BFS с рекурсией
 
-    # Проверяем циклические зависимости
-    if str(current_node) in visited:
-        print(f"Обнаружена циклическая зависимость: {current_node}")
-        return current_node
+    visited = set()
+    queue = deque()
 
-    # Проверяем максимальную глубину
-    if current_level >= max_depth:
-        print(f"Достигнута максимальная глубина {max_depth} для {current_node}")
-        return current_node
+    # Создаём корневой узел и добавляем в очередь
+    root_node = DependencyNode(start_package, start_version)
+    root_node.level = 0
+    queue.append(root_node)
+    visited.add(str(root_node))
 
-    # Проверяем фильтр
-    if filter_str and filter_str in start_package:
-        print(f"Пропущен по фильтру '{filter_str}': {current_node}")
-        return current_node
+    def bfs_recursive(current_queue, current_depth):
+        # Рекурсивная функция BFS
+        if not current_queue or current_depth >= max_depth:
+            return
 
-    # Добавляем в посещённые
-    visited.add(str(current_node))
+        next_level_queue = deque()
 
-    print(f"Обрабатываем {current_node} (уровень {current_level})")
+        while current_queue:
+            current_node = current_queue.popleft()
+            print(f"Обрабатываем {current_node} (уровень {current_depth})")
 
-    try:
-        # Получаем прямые зависимости
-        dependencies = get_dependencies(start_package, start_version, repo_url, test_mode)
+            try:
+                # Получаем прямые зависимости для текущего узла
+                dependencies = get_dependencies(current_node.package_name, current_node.version, repo_url, test_mode)
 
-        # Для каждой зависимости рекурсивно строим граф
-        for dep in dependencies:
-            if ':' in dep:
-                parts = dep.split(':')
+                # Обрабатываем каждую зависимость
+                for dep in dependencies:
+                    if ':' in dep:
+                        parts = dep.split(':')
 
-                if test_mode:
-                    # Тестовый режим
-                    dep_package = parts[0]  # Только имя пакета без ":1.0"
-                    dep_version = parts[1] if len(parts) > 1 else "1.0"
-                else:
-                    # Maven режим: "group:artifact:version"
-                    dep_package = f"{parts[0]}:{parts[1]}"
-                    dep_version = parts[2] if len(parts) > 2 else "unknown"
+                        if test_mode:
+                            # Тестовый режим
+                            dep_package = parts[0]  # Только имя пакета без ":1.0"
+                            dep_version = parts[1] if len(parts) > 1 else "1.0"
+                        else:
+                            # Maven режим: "group:artifact:version"
+                            dep_package = f"{parts[0]}:{parts[1]}"
+                            dep_version = parts[2] if len(parts) > 2 else "unknown"
 
-                # Рекурсивный вызов для зависимости
-                dep_node = build_dependency_graph_dfs(
-                    dep_package, dep_version, repo_url,
-                    max_depth, filter_str, test_mode, visited, current_level + 1
-                )
-                current_node.dependencies.append(dep_node)
+                        # Проверяем фильтр
+                        if filter_str and filter_str in dep_package:
+                            print(f"Пропущен по фильтру '{filter_str}': {dep_package}:{dep_version}")
+                            continue
 
-    except Exception as e:
-        print(f"Ошибка при обработке {current_node}: {e}")
+                        # Создаём узел для зависимости
+                        dep_node = DependencyNode(dep_package, dep_version)
+                        dep_node.level = current_depth + 1
 
-    return current_node
+                        # Проверяем циклические зависимости
+                        if str(dep_node) in visited:
+                            print(f"Обнаружена циклическая зависимость: {dep_node}")
+                            # Всё равно добавляем узел в зависимости, но не обрабатываем дальше
+                            current_node.dependencies.append(dep_node)
+                            continue
+
+                        # Добавляем в посещённые и в очередь следующего уровня
+                        visited.add(str(dep_node))
+                        current_node.dependencies.append(dep_node)
+                        next_level_queue.append(dep_node)
+
+            except Exception as e:
+                print(f"Ошибка при обработке {current_node}: {e}")
+
+        # Рекурсивный вызов для следующего уровня
+        bfs_recursive(next_level_queue, current_depth + 1)
+
+    # Запускаем BFS
+    bfs_recursive(queue, 0)
+    return root_node
 
 
 def print_dependency_graph(node, indent=0):
@@ -123,6 +137,7 @@ def get_test_dependencies(package_name, repo_url):
         print(f"Ошибка чтения тестового файла: {e}")
         return []
 
+
 def get_dependencies(package_name, version, repo_url, test_mode=False):
     """
     Универсальная функция получения зависимостей
@@ -139,8 +154,8 @@ def get_dependencies(package_name, version, repo_url, test_mode=False):
         print(f"Maven режим: ищем зависимости для {package_name}:{version}")
         return get_maven_dependencies(package_name, version, repo_url)
 
-def get_maven_dependencies(package_name, version, repo_url):
 
+def get_maven_dependencies(package_name, version, repo_url):
     try:
         # Разделяем group:artifact
         group_id, artifact_id = package_name.split(':')
@@ -208,7 +223,7 @@ def command_line():
     parser.add_argument(
         "-m", "--repo-mode",
         action="store_true",
-        help="Режим работы с тестовым репозиторием"
+        help="Режим работы с тестового репозитория"
     )
 
     # Версия пакета
@@ -293,15 +308,14 @@ def command_line():
     print(f"  - Фильтр пакетов: '{args.filter}'")
     print(f"  - Режим тестирования: {args.repo_mode}")
 
-    # Строим полный граф
-    root_node = build_dependency_graph_dfs(
+    # Строим полный граф с помощью BFS
+    root_node = build_dependency_graph_bfs(
         start_package=args.package_name,
         start_version=args.version,
         repo_url=args.repo_url,
         max_depth=args.max_depth,
         filter_str=args.filter,
         test_mode=args.repo_mode
-
     )
 
     # Выводим граф
@@ -310,29 +324,30 @@ def command_line():
 
 
 def validate_arguments(args):
-
     errors = []
 
-        # Проверка обязательных параметров
+    # Проверка обязательных параметров
     if not args.package_name or not args.package_name.strip():
         errors.append("имя пакета не может быть пустым")
 
     if not args.repo_url or not args.repo_url.strip():
         errors.append("источник не может быть пустым")
 
-        # Проверка максимальной глубины
+    # Проверка максимальной глубины
     if args.max_depth <= 0:
         errors.append("максимальная глубина должна быть положительным числом")
 
-        # Проверка версии (если указана)
+    # Проверка версии (если указана)
     if args.version and args.version != "latest":
         if not args.version[0].isdigit():
             errors.append("версия должна начинаться с цифры")
 
-        # Простая проверка выходного файла
+    # Простая проверка выходного файла
     if args.output_image and not args.output_image.endswith(('.png', '.jpg', '.jpeg', '.svg')):
         errors.append("выходной файл должен быть изображением (.png, .jpg, .jpeg, .svg)")
 
     return errors
 
-command_line()
+
+if __name__ == "__main__":
+    command_line()
