@@ -25,27 +25,29 @@ class DependencyNode:
 
 
 def build_dependency_graph_bfs(start_package, start_version, repo_url, max_depth=10, filter_str="", test_mode=False):
-
-    # Построение графа зависимостей с помощью BFS с рекурсией
-
+    """
+    Построение графа зависимостей с помощью BFS с рекурсией
+    """
     visited = set()
-    queue = deque()
 
-    # Создаём корневой узел и добавляем в очередь
+    # Создаём корневой узел
     root_node = DependencyNode(start_package, start_version)
     root_node.level = 0
-    queue.append(root_node)
     visited.add(str(root_node))
 
-    def bfs_recursive(current_queue, current_depth):
-        # Рекурсивная функция BFS
-        if not current_queue or current_depth >= max_depth:
+    def bfs_recursive(current_level_nodes, current_depth):
+        """
+        current_level_nodes - узлы текущего уровня
+        current_depth - текущая глубина
+        """
+        # Базовый случай рекурсии
+        if not current_level_nodes or current_depth >= max_depth:
             return
 
-        next_level_queue = deque()
+        next_level_nodes = []
 
-        while current_queue:
-            current_node = current_queue.popleft()
+        # Обрабатываем все узлы текущего уровня
+        for current_node in current_level_nodes:
             print(f"Обрабатываем {current_node} (уровень {current_depth})")
 
             try:
@@ -58,11 +60,9 @@ def build_dependency_graph_bfs(start_package, start_version, repo_url, max_depth
                         parts = dep.split(':')
 
                         if test_mode:
-                            # Тестовый режим
-                            dep_package = parts[0]  # Только имя пакета без ":1.0"
+                            dep_package = parts[0]
                             dep_version = parts[1] if len(parts) > 1 else "1.0"
                         else:
-                            # Maven режим: "group:artifact:version"
                             dep_package = f"{parts[0]}:{parts[1]}"
                             dep_version = parts[2] if len(parts) > 2 else "unknown"
 
@@ -78,23 +78,22 @@ def build_dependency_graph_bfs(start_package, start_version, repo_url, max_depth
                         # Проверяем циклические зависимости
                         if str(dep_node) in visited:
                             print(f"Обнаружена циклическая зависимость: {dep_node}")
-                            # Всё равно добавляем узел в зависимости, но не обрабатываем дальше
                             current_node.dependencies.append(dep_node)
                             continue
 
-                        # Добавляем в посещённые и в очередь следующего уровня
+                        # Добавляем в посещённые и в следующий уровень
                         visited.add(str(dep_node))
                         current_node.dependencies.append(dep_node)
-                        next_level_queue.append(dep_node)
+                        next_level_nodes.append(dep_node)
 
             except Exception as e:
                 print(f"Ошибка при обработке {current_node}: {e}")
 
-        # Рекурсивный вызов для следующего уровня
-        bfs_recursive(next_level_queue, current_depth + 1)
+        # Рекурсивный вызов для СЛЕДУЮЩЕГО уровня с УВЕЛИЧЕННОЙ глубиной
+        bfs_recursive(next_level_nodes, current_depth + 1)
 
-    # Запускаем BFS
-    bfs_recursive(queue, 0)
+    # Запускаем BFS с корневым узлом и глубиной 0
+    bfs_recursive([root_node], 0)
     return root_node
 
 
