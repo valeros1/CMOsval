@@ -1,352 +1,430 @@
-import argparse
+#!/usr/bin/env python3
+"""
+Парсер учебного конфигурационного языка (вариант 18) в XML
+"""
+
 import sys
-import urllib.request
-import xml.etree.ElementTree as ET
-from collections import deque
+import re
+import argparse
+from typing import Dict, List, Any, Union
 
 
-class DependencyNode:
-    """Узел графа зависимостей"""
+class ConfigParser:
+    def __init__(self):
+        self.constants: Dict[str, Any] = {}
 
-    def __init__(self, package_name, version):
-        self.package_name = package_name
-        self.version = version
-        self.dependencies = []  # прямые зависимости
-        self.level = 0  # уровень в графе
-
-    def __str__(self):
-        return f"{self.package_name}:{self.version}"
-
-    def __eq__(self, other):
-        return str(self) == str(other)
-
-    def __hash__(self):
-        return hash(str(self))
-
-
-def build_dependency_graph_bfs(start_package, start_version, repo_url, max_depth=10, filter_str="", test_mode=False):
-    """
-    Построение графа зависимостей с помощью BFS с рекурсией
-    """
-    visited = set()
-
-    # Создаём корневой узел
-    root_node = DependencyNode(start_package, start_version)
-    root_node.level = 0
-    visited.add(str(root_node))
-
-    def bfs_recursive(current_level_nodes, current_depth):
-        """
-        current_level_nodes - узлы текущего уровня
-        current_depth - текущая глубина
-        """
-        # Базовый случай рекурсии
-        if not current_level_nodes or current_depth >= max_depth:
-            return
-
-        next_level_nodes = []
-
-        # Обрабатываем все узлы текущего уровня
-        for current_node in current_level_nodes:
-            print(f"Обрабатываем {current_node} (уровень {current_depth})")
-
+    #
+    #  ЧИСЛА
+    #
+    def parse_number(self, token: str) -> Union[int, float, str]:
+        try:
+            return int(token)
+        except ValueError:
             try:
-                # Получаем прямые зависимости для текущего узла
-                dependencies = get_dependencies(current_node.package_name, current_node.version, repo_url, test_mode)
+                return float(token)
+            except ValueError:
+                return token
 
-                # Обрабатываем каждую зависимость
-                for dep in dependencies:
-                    if ':' in dep:
-                        parts = dep.split(':')
+    #
+    #  МАССИВЫ: ТОЛЬКО ФОРМАТ '(
+    #
+    def parse_array(self, tokens: List[str]) -> tuple[List[Any], int]:
+        result = []
+        i = 0
 
-                        if test_mode:
-                            dep_package = parts[0]
-                            dep_version = parts[1] if len(parts) > 1 else "1.0"
-                        else:
-                            dep_package = f"{parts[0]}:{parts[1]}"
-                            dep_version = parts[2] if len(parts) > 2 else "unknown"
+        while i < len(tokens):
+            token = tokens[i]
 
-                        # Проверяем фильтр
-                        if filter_str and filter_str in dep_package:
-                            print(f"Пропущен по фильтру '{filter_str}': {dep_package}:{dep_version}")
-                            continue
+            # Конец массива
+            if token == ')':
+                break
 
-                        # Создаём узел для зависимости
-                        dep_node = DependencyNode(dep_package, dep_version)
-                        dep_node.level = current_depth + 1
+            # Вложенный массив — обязательно "'("
+            elif token == "'(":
+                nested, consumed = self.parse_array(tokens[i + 1:])
+                result.append(nested)
+                i += consumed + 1
 
-                        # Проверяем циклические зависимости
-                        if str(dep_node) in visited:
-                            print(f"Обнаружена циклическая зависимость: {dep_node}")
-                            current_node.dependencies.append(dep_node)
-                            continue
+            # Вложенный словарь
+            elif token == '([':
+                nested, consumed = self.parse_dict(tokens[i:])
+                result.append(nested)
+                i += consumed - 1
 
-                        # Добавляем в посещённые и в следующий уровень
-                        visited.add(str(dep_node))
-                        current_node.dependencies.append(dep_node)
-                        next_level_nodes.append(dep_node)
+            # Число
+            elif re.match(r'^[+-]?([1-9][0-9]*|0)$', token):
+                result.append(self.parse_number(token))
 
-            except Exception as e:
-                print(f"Ошибка при обработке {current_node}: {e}")
+            # Константа
+            elif token in self.constants:
+                result.append(self.constants[token])
 
-        # Рекурсивный вызов для СЛЕДУЮЩЕГО уровня с УВЕЛИЧЕННОЙ глубиной
-        bfs_recursive(next_level_nodes, current_depth + 1)
+            # Строка (по ТЗ их нет, но токен может попасть)
+            else:
+                result.append(token)
 
-    # Запускаем BFS с корневым узлом и глубиной 0
-    bfs_recursive([root_node], 0)
-    return root_node
+            i += 1
 
+        return result, i + 1
 
-def print_dependency_graph(node, indent=0):
-    """Красивый вывод графа зависимостей"""
-    prefix = "  " * indent + "├── " if indent > 0 else ""
-    print(f"{prefix}{node.package_name}:{node.version}")
+    #
+    #  СЛОВАРЬ ([ KEY : VALUE ])
+    #
+    def parse_dict(self, tokens: List[str]) -> tuple[Dict[str, Any], int]:
+        result = {}
+        i = 1  # пропускаем '(['
 
-    for dep in node.dependencies:
-        print_dependency_graph(dep, indent + 1)
+        while i < len(tokens):
+            token = tokens[i]
 
+            # Конец словаря
+            if token == '])':
+                break
 
-def get_test_dependencies(package_name, repo_url):
-    """
-    Получить зависимости из тестового файла
-    Формат файла: A: B, C, D
-    """
-    try:
-        with open(repo_url, 'r', encoding='utf-8') as f:
-            content = f.read()
+            # Игнорируем скобки — они могут остаться после массивов
+            if token in ('(', ')'):
+                i += 1
+                continue
 
-        # Извлекаем только имя пакета (без версии)
-        search_name = package_name.split(':')[0] if ':' in package_name else package_name
+            # Убираем хвосты ]
+            clean_token = token.rstrip(']') if token.endswith(']') else token
 
-        for line in content.split('\n'):
+            # Проверка имени по ТЗ
+            if not re.match(r'^[_A-Z][_a-zA-Z0-9]*$', clean_token):
+                i += 1
+                continue
+
+            key = clean_token
+            i += 1
+
+            # Должен быть ':'
+            if i >= len(tokens) or tokens[i] != ':':
+                raise ValueError(f"Expected ':' after key {key}")
+            i += 1
+
+            # Значение должно идти
+            if i >= len(tokens):
+                raise ValueError(f"Expected value after ':' for key {key}")
+
+            value_token = tokens[i]
+            clean_value = value_token.rstrip(']') if value_token.endswith(']') else value_token
+
+            #
+            # Значение — массив
+            #
+            if clean_value == "'(":
+                i += 1
+                value, consumed = self.parse_array(tokens[i:])
+                result[key] = value
+                i += consumed
+
+            #
+            # Значение — словарь
+            #
+            elif clean_value == '([':
+                value, consumed = self.parse_dict(tokens[i:])
+                result[key] = value
+                i += consumed - 1
+
+            #
+            # Выражение
+            #
+            elif clean_value == '|':
+                expr_tokens = []
+                i += 1
+                while i < len(tokens) and tokens[i] != '|':
+                    expr_tokens.append(tokens[i])
+                    i += 1
+                if i >= len(tokens):
+                    raise ValueError("Unclosed expression")
+                result[key] = self.evaluate_postfix(expr_tokens)
+                i += 1
+
+            #
+            # Константа
+            #
+            elif clean_value in self.constants:
+                result[key] = self.constants[clean_value]
+                i += 1
+
+            #
+            # Число
+            #
+            elif re.match(r'^[+-]?([1-9][0-9]*|0)$', clean_value):
+                result[key] = self.parse_number(clean_value)
+                i += 1
+
+            #
+            # Строка
+            #
+            else:
+                result[key] = clean_value
+                i += 1
+
+            if i < len(tokens) and tokens[i] == ',':
+                i += 1
+
+        return result, i + 1
+
+    #
+    #  ВЫЧИСЛЕНИЕ ПОСТФИКСА
+    #
+    def evaluate_postfix(self, tokens: List[str]) -> Any:
+        stack = []
+        i = 0
+
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Служебные скобки — игнорируем
+            if token in ('(', ')'):
+                i += 1
+                continue
+
+            # mod()
+            if token == 'mod()':
+                b = stack.pop()
+                a = stack.pop()
+                stack.append(a % b)
+                i += 1
+                continue
+
+            # concat()
+            if token == 'concat()':
+                b = stack.pop()
+                a = stack.pop()
+                stack.append(str(a) + str(b))
+                i += 1
+                continue
+
+            # +
+            if token == '+':
+                b = stack.pop()
+                a = stack.pop()
+                stack.append(a + b)
+                i += 1
+                continue
+
+            # -
+            if token == '-':
+                b = stack.pop()
+                a = stack.pop()
+                stack.append(a - b)
+                i += 1
+                continue
+
+            # Константа
+            if token in self.constants:
+                stack.append(self.constants[token])
+                i += 1
+                continue
+
+            # Число
+            if re.match(r'^[+-]?([1-9][0-9]*|0)$', token):
+                stack.append(self.parse_number(token))
+                i += 1
+                continue
+
+            # Идентификатор / строка
+            stack.append(token)
+            i += 1
+
+        return stack[0] if stack else None
+
+    #
+    #  ОСНОВНОЙ ПАРСЕР
+    #
+    def parse(self, text: str) -> Dict[str, Any]:
+        # Удаляем комментарии
+        lines = text.split("\n")
+        cleaned = []
+        in_ml = False
+
+        for line in lines:
             line = line.strip()
-            if ':' in line:
-                current_package, deps_part = line.split(':', 1)
-                current_package = current_package.strip()
+            if not line:
+                continue
 
-                if current_package == search_name:
-                    dependencies = [dep.strip() for dep in deps_part.split(',') if dep.strip()]
-                    print(f"Найдены зависимости для {search_name}: {dependencies}")
-                    return dependencies
+            if line.startswith("\\"):
+                continue
 
-        print(f"Пакет {search_name} не найден в файле")
-        return []
+            if line.startswith("=begin"):
+                in_ml = True
+                continue
 
-    except Exception as e:
-        print(f"Ошибка чтения тестового файла: {e}")
-        return []
+            if line.startswith("=cut"):
+                in_ml = False
+                continue
+
+            if in_ml:
+                continue
+
+            cleaned.append(line)
+
+        code = " ".join(cleaned)
+
+        #
+        # Токенизация
+        #
+        tokens = []
+        i = 0
+        while i < len(code):
+
+            if code[i].isspace():
+                i += 1
+                continue
+
+            # Мультисимвольные токены
+            if code[i:i+2] == "'(":
+                tokens.append("'(")
+                i += 2
+                continue
+
+            if code[i:i+2] == "(['":
+                tokens.append("(['")
+                i += 2
+                continue
+
+            if code[i:i+2] == "(['":
+                pass
+
+            if code[i:i+2] == "(['":
+                pass
+
+            if code[i:i+2] == "([":
+                tokens.append("([")
+                i += 2
+                continue
+
+            if code[i:i+2] == "])":
+                tokens.append("])")
+                i += 2
+                continue
+
+            # Односимвольные токены
+            if code[i] in "()|,:;=":
+                tokens.append(code[i])
+                i += 1
+                continue
+
+            # Идентификатор/число
+            j = i
+            while j < len(code) and not code[j].isspace() and code[j] not in "()|,:;=":
+                j += 1
+            tokens.append(code[i:j])
+            i = j
+
+        #
+        # Обработка констант
+        #
+        i = 0
+        new_tokens = []
+        while i < len(tokens):
+
+            if tokens[i] == "set" and i + 3 < len(tokens) and tokens[i+2] == '=':
+                name = tokens[i+1]
+                value_token = tokens[i+3]
+
+                # set X = | ... |
+                if value_token == "|":
+                    expr = []
+                    j = i+4
+                    while j < len(tokens) and tokens[j] != "|":
+                        expr.append(tokens[j])
+                        j += 1
+                    if j >= len(tokens):
+                        raise ValueError("Unclosed expression")
+                    self.constants[name] = self.evaluate_postfix(expr)
+                    i = j + 1
+
+                # set X = NUMBER
+                elif re.match(r'^[+-]?([1-9][0-9]*|0)$', value_token):
+                    self.constants[name] = self.parse_number(value_token)
+                    i += 4
+
+                # set X = TOKEN
+                else:
+                    self.constants[name] = value_token
+                    i += 4
+
+                if i < len(tokens) and tokens[i] == ';':
+                    i += 1
+
+                continue
+
+            new_tokens.append(tokens[i])
+            i += 1
+
+        tokens = new_tokens
+
+        #
+        # Основной словарь
+        #
+        result = {}
+        i = 0
+        while i < len(tokens):
+            if tokens[i] == "([":
+                d, consumed = self.parse_dict(tokens[i:])
+                result.update(d)
+                i += consumed
+            else:
+                i += 1
+
+        return result
+
+    #
+    #  XML
+    #
+    def to_xml(self, data: Dict[str, Any], indent: int = 0) -> str:
+        xml = []
+        sp = "  " * indent
+
+        for key, value in data.items():
+
+            if isinstance(value, dict):
+                xml.append(f"{sp}<{key}>")
+                xml.append(self.to_xml(value, indent + 1))
+                xml.append(f"{sp}</{key}>")
+
+            elif isinstance(value, list):
+                xml.append(f"{sp}<{key}>")
+                for item in value:
+                    if isinstance(item, dict):
+                        xml.append(self.to_xml({"item": item}, indent + 1))
+                    else:
+                        xml.append(f"{sp}  <item>{item}</item>")
+                xml.append(f"{sp}</{key}>")
+
+            else:
+                xml.append(f"{sp}<{key}>{value}</{key}>")
+
+        return "\n".join(xml)
 
 
-def get_dependencies(package_name, version, repo_url, test_mode=False):
-    """
-    Универсальная функция получения зависимостей
-    Поддерживает как Maven, так и тестовый режим
-    """
-    if test_mode:
-        # Тестовый режим - используем файл
-        print(f"Тестовый режим: ищем зависимости для {package_name} в файле {repo_url}")
-        dependencies = get_test_dependencies(package_name, repo_url)
-        # Преобразуем в формат "пакет:версия"
-        return [f"{dep}:1.0" for dep in dependencies if dep]  # убираем пустые
-    else:
-        # Режим Maven - используем старую функцию
-        print(f"Maven режим: ищем зависимости для {package_name}:{version}")
-        return get_maven_dependencies(package_name, version, repo_url)
-
-
-def get_maven_dependencies(package_name, version, repo_url):
-    try:
-        # Разделяем group:artifact
-        group_id, artifact_id = package_name.split(':')
-
-        # Формируем URL к POM-файлу
-        group_path = group_id.replace('.', '/')
-        repo_url = repo_url.rstrip('/')
-        pom_url = f"{repo_url}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
-
-        print(f"Загружаем: {pom_url}")
-
-        # Скачиваем POM
-        with urllib.request.urlopen(pom_url) as response:
-            pom_content = response.read()
-
-        # Парсим XML
-        root = ET.fromstring(pom_content)
-
-        # Ищем зависимости
-        dependencies = []
-        for dep in root.findall('.//{http://maven.apache.org/POM/4.0.0}dependency'):
-            group_elem = dep.find('{http://maven.apache.org/POM/4.0.0}groupId')
-            artifact_elem = dep.find('{http://maven.apache.org/POM/4.0.0}artifactId')
-            version_elem = dep.find('{http://maven.apache.org/POM/4.0.0}version')
-
-            if group_elem is not None and artifact_elem is not None:
-                dep_name = f"{group_elem.text}:{artifact_elem.text}"
-                if version_elem is not None:
-                    dep_name += f":{version_elem.text}"
-                dependencies.append(dep_name)
-
-        return dependencies
-
-    except Exception as e:
-        print(f"Ошибка при получении зависимостей: {e}")
-        return []
-
-
-def command_line():
-    """
-    Минимальное CLI-приложение для визуализации графа зависимостей
-    Вариант №17, Этап 1
-    """
-    parser = argparse.ArgumentParser(
-        description='Инструмент визуализации графа зависимостей для менеджера пакетов'
-    )
-
-    # Имя анализируемого пакета (обязательный)
-    parser.add_argument(
-        "-p", "--package-name",
-        type=str,
-        required=True,
-        help="Имя анализируемого пакета"
-    )
-
-    # URL-адрес репозитория или путь к файлу тестового репозитория (обязательный)
-    parser.add_argument(
-        "-r", "--repo-url",
-        type=str,
-        required=True,
-        help="URL-адрес репозитория или путь к файлу тестового репозитория"
-    )
-
-    # Режим работы с тестовым репозиторием
-    parser.add_argument(
-        "-m", "--repo-mode",
-        action="store_true",
-        help="Режим работы с тестового репозитория"
-    )
-
-    # Версия пакета
-    parser.add_argument(
-        "-v", "--version",
-        type=str,
-        default="latest",
-        help="Версия пакета"
-    )
-
-    # Имя сгенерированного файла с изображением графа
-    parser.add_argument(
-        "-o", "--output-image",
-        type=str,
-        default="dependency_graph.png",
-        help="Имя сгенерированного файла с изображением графа"
-    )
-
-    # Режим вывода зависимостей в формате ASCII-дерева
-    parser.add_argument(
-        "-a", "--ascii-tree",
-        action="store_true",
-        help="Режим вывода зависимостей в формате ASCII-дерева"
-    )
-
-    # Максимальная глубина анализа зависимостей
-    parser.add_argument(
-        "-d", "--max-depth",
-        type=int,
-        default=10,
-        help="Максимальная глубина анализа зависимостей"
-    )
-
-    # Подстрока для фильтрации пакетов
-    parser.add_argument(
-        "-f", "--filter",
-        type=str,
-        default="",
-        help="Подстрока для фильтрации пакетов"
-    )
-
-    # Парсинг аргументов
+#
+#  MAIN
+#
+def main():
+    parser = argparse.ArgumentParser(description="Конфигурационный парсер (вариант 18)")
+    parser.add_argument("-o", "--output", required=True)
     args = parser.parse_args()
 
-    errors = validate_arguments(args)
-    if errors:
-        print("Обнаружены ошибки в параметрах:")
-        for error in errors:
-            print(f"  - {error}")
+    text = sys.stdin.read()
+    parser_obj = ConfigParser()
+
+    try:
+        data = parser_obj.parse(text)
+        xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<config>\n{parser_obj.to_xml(data, 1)}\n</config>'
+
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(xml)
+
+        print(f"Успешно сконвертировано в {args.output}")
+
+    except Exception as e:
+        print(f"Ошибка: {e}", file=sys.stderr)
         sys.exit(1)
-
-    args_dict = vars(args)
-
-    print(50 * "=")
-    for key, value in args_dict.items():
-        print(f"{key}: {value}")
-
-    print("ЭТАП 2: ПОЛУЧЕНИЕ ЗАВИСИМОСТЕЙ MAVEN")
-    print("=" * 50)
-
-    # Получаем зависимости
-    dependencies = get_maven_dependencies(
-        args.package_name,
-        args.version,
-        args.repo_url
-    )
-
-    # Выводим зависимости
-    if dependencies:
-        print(f"\nПрямые зависимости {args.package_name}:{args.version}:")
-        for i, dep in enumerate(dependencies, 1):
-            print(f"  {i}. {dep}")
-    else:
-        print(f"\nЗависимости не найдены для {args.package_name}")
-
-    print("\n" + "-" * 50)
-    print("ЭТАП 3: ПОСТРОЕНИЕ ПОЛНОГО ГРАФА ЗАВИСИМОСТЕЙ")
-    print("-" * 50)
-
-    print(f"Параметры анализа:")
-    print(f"  - Максимальная глубина: {args.max_depth}")
-    print(f"  - Фильтр пакетов: '{args.filter}'")
-    print(f"  - Режим тестирования: {args.repo_mode}")
-
-    # Строим полный граф с помощью BFS
-    root_node = build_dependency_graph_bfs(
-        start_package=args.package_name,
-        start_version=args.version,
-        repo_url=args.repo_url,
-        max_depth=args.max_depth,
-        filter_str=args.filter,
-        test_mode=args.repo_mode
-    )
-
-    # Выводим граф
-    print(f"\nПолный граф зависимостей {args.package_name}:{args.version}:")
-    print_dependency_graph(root_node)
-
-
-def validate_arguments(args):
-    errors = []
-
-    # Проверка обязательных параметров
-    if not args.package_name or not args.package_name.strip():
-        errors.append("имя пакета не может быть пустым")
-
-    if not args.repo_url or not args.repo_url.strip():
-        errors.append("источник не может быть пустым")
-
-    # Проверка максимальной глубины
-    if args.max_depth <= 0:
-        errors.append("максимальная глубина должна быть положительным числом")
-
-    # Проверка версии (если указана)
-    if args.version and args.version != "latest":
-        if not args.version[0].isdigit():
-            errors.append("версия должна начинаться с цифры")
-
-    # Простая проверка выходного файла
-    if args.output_image and not args.output_image.endswith(('.png', '.jpg', '.jpeg', '.svg')):
-        errors.append("выходной файл должен быть изображением (.png, .jpg, .jpeg, .svg)")
-
-    return errors
 
 
 if __name__ == "__main__":
-    command_line()
+    main()
